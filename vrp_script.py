@@ -87,7 +87,8 @@ def run_vrp(fichier_excel):
         a = dict(zip(clients["Nom"], clients["Disponible"]))
         o = dict(zip(vehicules_df["Nom"], vehicules_df["Capacité"]))
 
-        V_all = [f"V{i+1}" for i in range(len(vehicules_df))]
+        # Liste des noms réels des véhicules depuis l'Excel
+        V_all = vehicules_df["Nom"].tolist()
         C = noms_clients
         N = noms_avec_depot
 
@@ -116,15 +117,15 @@ def run_vrp(fichier_excel):
         for k in V:
             for h in N:
                 model += pulp.lpSum(x[k, i, h] for i in N if i != h) == pulp.lpSum(x[k, h, j] for j in N if j != h)
-            model += pulp.lpSum(q[j] * x[k, i, j] for j in C for i in N if i != j) <= vehicules_df.iloc[int(k[1:])-1]["Capacité"]
+            model += pulp.lpSum(q[j] * x[k, i, j] for j in C for i in N if i != j) <= o[k]
 
             for i in C:
                 for j in C:
                     if i != j:
-                        model += u[k, j] >= u[k, i] + q[j] - (1 - x[k, i, j]) * vehicules_df.iloc[int(k[1:])-1]["Capacité"]
+                        model += u[k, j] >= u[k, i] + q[j] - (1 - x[k, i, j]) * o[k]
             for j in C:
                 model += u[k, j] >= q[j]
-                model += u[k, j] <= vehicules_df.iloc[int(k[1:])-1]["Capacité"]
+                model += u[k, j] <= o[k]
 
         model.solve(pulp.PULP_CBC_CMD(msg=0, timeLimit=time_limit))
 
@@ -168,7 +169,7 @@ def run_vrp(fichier_excel):
     df_trajets_ordonnes.to_excel(fichier_resultat, index=False)
 
     map_center = coord_dict["depot"]
-    m = folium.Map(location=map_center, zoom_start=8)
+    m = folium.Map(location=map_center, zoom_start=8, width="100%")  # largeur max
     for nom, (lat, lon) in coord_dict.items():
         folium.Marker([lat, lon], popup=nom, icon=folium.Icon(color="red" if nom == "depot" else "blue")).add_to(m)
 
