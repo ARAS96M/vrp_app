@@ -4,7 +4,7 @@ from io import BytesIO
 from vrp_script import run_vrp
 
 st.set_page_config(page_title="Optimisation VRP", layout="wide")
-st.title("🚚 Optimisation VRP")
+st.title("🚚 Optimisation Trajet d'expédition")
 
 fichier = st.file_uploader("Importer un fichier Excel", type=["xlsx"])
 
@@ -39,6 +39,7 @@ if fichier:
             st.components.v1.html(html, height=600, width=1500)
         except FileNotFoundError:
             st.error("❌ La carte n'a pas été trouvée. Vérifie que run_vrp génère bien un fichier HTML.")
+
 
 
 
