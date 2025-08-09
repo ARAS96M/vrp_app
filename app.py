@@ -1,7 +1,9 @@
 import streamlit as st
 import pandas as pd
+from io import BytesIO
 from vrp_script import run_vrp
 
+st.set_page_config(page_title="Optimisation VRP", layout="wide")
 st.title("🚚 Optimisation VRP")
 
 fichier = st.file_uploader("Importer un fichier Excel", type=["xlsx"])
@@ -18,8 +20,23 @@ if fichier:
         st.success("Terminé ✅")
         st.dataframe(df_resultats)
 
-        st.download_button("📥 Télécharger Excel", df_resultats.to_excel(index=False), "resultats.xlsx")
+        # 📥 Téléchargement Excel corrigé
+        buffer = BytesIO()
+        df_resultats.to_excel(buffer, index=False)
+        buffer.seek(0)
 
-        with open(chemin_carte, "r", encoding="utf-8") as f:
-            html = f.read()
-        st.components.v1.html(html, height=600)
+        st.download_button(
+            label="📥 Télécharger Excel",
+            data=buffer,
+            file_name="resultats.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+        # 🗺 Affichage carte
+        try:
+            with open(chemin_carte, "r", encoding="utf-8") as f:
+                html = f.read()
+            st.components.v1.html(html, height=600)
+        except FileNotFoundError:
+            st.error("❌ La carte n'a pas été trouvée. Vérifie que run_vrp génère bien un fichier HTML.")
+
