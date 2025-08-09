@@ -11,38 +11,59 @@ import traceback
 # === Fonction de distance Haversine ===
 def haversine(coord1, coord2):
     R = 6371
-    lat1, lon1 = radians(coord1[0]), radians(coord1[1])
-    lat2, lon2 = radians(coord2[0]), radians(coord2[1])
+    lat1, lon1 = radians(coord1[0]), coord1[1]
+    lat2, lon2 = radians(coord2[0]), coord2[1]
     dlat = lat2 - lat1
     dlon = lon2 - lon1
     a = sin(dlat/2)**2 + cos(lat1)*cos(lat2)*sin(dlon/2)**2
     c = 2 * atan2(sqrt(a), sqrt(1 - a))
     return R * c
 
-# === Fonction pour reformater la colonne Véhicule selon ta demande ===
+# === Fonction pour formater les trajets selon ta règle ===
 def formater_trajets(df):
-    # On enlève les colonnes inutiles
-    df = df.drop(columns=["Cluster", "Véhicule"], errors="ignore").reset_index(drop=True)
+    """
+    Retourne (df_final, df_pour_carte)
+    - df_pour_carte : contient encore la colonne 'Cluster' et la nouvelle colonne 'Véhicule' (utile pour la carte)
+    - df_final : version à sauvegarder / afficher (colonnes : Véhicule, Départ, Arrivée, Distance (KM))
+    Règles :
+    - Si Départ == 'depot' (et index != 0) -> on INCREMENTE le numéro du véhicule *avant* d'assigner la ligne.
+    - Si '-part' apparaît dans Départ ou Arrivée -> INCREMENT immédiat (la même ligne reçoit le véhicule incrémenté).
+    """
+    df2 = df.copy().reset_index(drop=True)
 
-    vehicules = []
+    numeros = []
     current_num = 1
-    changer_vehicule_prochaine_ligne = False
 
-    for idx, row in df.iterrows():
-        if changer_vehicule_prochaine_ligne:
+    for idx, row in df2.iterrows():
+        dep = str(row.get("Départ", "")).strip()
+        arr = str(row.get("Arrivée", "")).strip()
+
+        # si '-part' dans depart/arrivée => incrément immédiat (la ligne reçoit le nouveau véhicule)
+        if "-part" in dep or "-part" in arr:
             current_num += 1
-            changer_vehicule_prochaine_ligne = False
+            numeros.append(current_num)
+            continue
 
-        vehicules.append(f"V{current_num}")
+        # si départ == depot (sauf première ligne) => incrément *avant* d'assigner la ligne
+        if dep.lower() == "depot" and idx != 0:
+            current_num += 1
+            numeros.append(current_num)
+            continue
 
-        # Préparer changement de véhicule à la prochaine ligne si condition remplie
-        if "-part" in str(row["Départ"]) or "-part" in str(row["Arrivée"]):
-            current_num += 1  # Incrément immédiat pour les parts
-        elif str(row["Départ"]).lower() == "depot" and idx != 0:
-            changer_vehicule_prochaine_ligne = True
+        # sinon on garde le véhicule courant
+        numeros.append(current_num)
 
-    df.insert(0, "Véhicule", vehicules)
-    return df
+    # formater en V1, V2, ...
+    vehs = [f"V{n}" for n in numeros]
+    df2.insert(0, "Véhicule", vehs)
+
+    # df_final masque Cluster et l'ancienne colonne Véhicule si elle existait
+    df_final = df2.drop(columns=["Cluster"], errors="ignore")  # on garde Véhicule nouvellement créé
+    # Pour la sauvegarde/affichage on peut garder seulement ces colonnes :
+    cols_keep = [c for c in ["Véhicule", "Départ", "Arrivée", "Distance (KM)"] if c in df_final.columns]
+    df_display = df_final[cols_keep].copy().reset_index(drop=True)
+
+    return df_display, df2  # display (sans Cluster), df2 (avec Cluster + Véhicule) pour la carte
 
 # === Fonction principale ===
 def run_vrp(fichier_excel):
@@ -73,7 +94,6 @@ def run_vrp(fichier_excel):
                     return n
             return None
 
-        # colonnes attendues pour clients
         col_nom = find_col(clients_df, ["Nom", "nom", "NOM"])
         col_lat = find_col(clients_df, ["Latitude", "latitude", "LATITUDE", "Lat"])
         col_lon = find_col(clients_df, ["Longitude", "longitude", "LONGITUDE", "Lon"])
@@ -85,14 +105,12 @@ def run_vrp(fichier_excel):
         if not all([col_nom, col_lat, col_lon, col_dem, col_disp, col_wilaya, col_zone]):
             raise ValueError("Colonnes client manquantes. Attendues: Nom, Latitude, Longitude, Demande, Disponible, Wilaya, ZONE.")
 
-        # colonnes attendues pour vehicules
         col_v_nom = find_col(vehicules_df, ["Nom", "nom", "NOM"])
-        col_v_cap = find_col(vehicules_df, ["Capacité", "Capacite", "capacite", "CAPACITE", "Capacité", "Capacité"])
+        col_v_cap = find_col(vehicules_df, ["Capacité", "Capacite", "capacite", "CAPACITE", "Capacité"])
 
         if not all([col_v_nom, col_v_cap]):
             raise ValueError("Colonnes vehicule manquantes. Attendues: Nom, Capacité.")
 
-        # renommer colonnes pour usage interne
         clients_df = clients_df.rename(columns={
             col_nom: "Nom",
             col_lat: "Latitude",
@@ -104,7 +122,6 @@ def run_vrp(fichier_excel):
         })
         vehicules_df = vehicules_df.rename(columns={col_v_nom: "Nom", col_v_cap: "Capacite"})
 
-        # nettoyage des valeurs
         clients_df["Nom"] = clients_df["Nom"].astype(str).str.strip()
         vehicules_df["Nom"] = vehicules_df["Nom"].astype(str).str.strip()
         clients_df["Latitude"] = pd.to_numeric(clients_df["Latitude"], errors="coerce")
@@ -126,7 +143,7 @@ def run_vrp(fichier_excel):
         clients = clients_df[clients_df["Nom"].str.lower() != "depot"].copy()
 
         # --- Fractionnement si dépassement capacité max individuelle ---
-        capacite_max_vehicule = int(vehicules_df["Capacite"].max())
+        capacite_max_vehicule = int(vehicules_df["Capacite"].max()) if len(vehicules_df)>0 else 0
         clients_fractionnes = []
         for _, row in clients.iterrows():
             if row["Demande"] > capacite_max_vehicule and capacite_max_vehicule > 0:
@@ -165,15 +182,14 @@ def run_vrp(fichier_excel):
 
         # --- Coordonnées dict (inclut depot et clients fractionnés) ---
         coord_dict = {}
-        # depuis la feuille client complète (inclut depot)
         for _, row in clients_df.iterrows():
             coord_dict[row["Nom"]] = (row["Latitude"], row["Longitude"])
-        # pour les clients fractionnés (si noms modifiés)
         for _, row in clients.iterrows():
             coord_dict[row["Nom"]] = (row["Latitude"], row["Longitude"])
 
-        # --- Capacités par véhicule dict ---
-        o = dict(zip(vehicules_df["Nom"].tolist(), vehicules_df["Capacite"].tolist()))
+        # --- Capacités par véhicule dict et liste véhicule (pas utilisé pour formater V1..Vn) ---
+        capacites_vehicules = dict(zip(vehicules_df["Nom"].tolist(), vehicules_df["Capacite"].tolist()))
+        liste_vehicules = vehicules_df["Nom"].tolist()
 
         # --- Fonction de résolution d'un cluster ---
         def resoudre_cluster(cluster_id):
@@ -187,59 +203,55 @@ def run_vrp(fichier_excel):
             q = dict(zip(clients["Nom"], clients["Demande"]))
             a = dict(zip(clients["Nom"], clients["Disponible"]))
 
-            # Véhicules disponibles (noms réels)
-            V_all = vehicules_df["Nom"].tolist()
+            # Véhicules disponibles (noms réels) - on prend l'ordre mais on utilise V1..Vn pour affichage final
+            V_all = liste_vehicules
 
-            # déterminer combien de véhicules il faut (par capacité cumulée)
+            # déterminer combien de véhicules nécessaires
             demande_totale = sum(q[n] for n in noms_clients if a.get(n, 0) == 1)
             capacite_cumulee = 0
             V = []
             for idx, v in enumerate(V_all):
-                capacite_cumulee += o[v]
+                capacite_cumulee += capacites_vehicules.get(v, 0)
                 V.append(v)
                 if capacite_cumulee >= max(1, min(demande_totale, max_total_capacite)):
                     break
             if not V:
-                # si aucune capacité lue, utilise au moins 1 véhicule si existant
                 if len(V_all) > 0:
                     V = [V_all[0]]
                 else:
                     raise ValueError("Aucun véhicule disponible dans la feuille 'vehicule'.")
 
-            # distance matrix
             d = {(i, j): haversine(coord_dict[i], coord_dict[j]) for i in noms_avec_depot for j in noms_avec_depot if i != j}
 
-            # --- Modèle pulp (variables imbriquées) ---
+            # --- Modèle pulp ---
             model = pulp.LpProblem(f"VRP_Cluster_{cluster_id}", pulp.LpMinimize)
             x = pulp.LpVariable.dicts("x", (V, noms_avec_depot, noms_avec_depot), cat='Binary')
             u = pulp.LpVariable.dicts("u", (V, noms_clients), lowBound=0, cat='Continuous')
 
-            # Objectif
+            # objectif
             model += pulp.lpSum(d[i, j] * x[k][i][j] for k in V for (i, j) in d)
 
-            # chaque client servi exactement une fois (si disponible)
+            # contraintes
             for j in noms_clients:
                 if a.get(j, 0) == 1:
                     model += pulp.lpSum(x[k][i][j] for k in V for i in noms_avec_depot if i != j) == 1
                     model += pulp.lpSum(x[k][j][i] for k in V for i in noms_avec_depot if i != j) == 1
 
-            # conservation de flux et capacités
             for k in V:
                 for h in noms_avec_depot:
                     model += pulp.lpSum(x[k][i][h] for i in noms_avec_depot if i != h) == pulp.lpSum(x[k][h][j] for j in noms_avec_depot if j != h)
-                # capacité vehicle k
-                model += pulp.lpSum(q[j] * x[k][i][j] for j in noms_clients for i in noms_avec_depot if i != j) <= o[k]
+                # capacité
+                model += pulp.lpSum(q[j] * x[k][i][j] for j in noms_clients for i in noms_avec_depot if i != j) <= capacites_vehicules.get(k, 0)
 
-                # contraintes subtour (Miller-Tucker-Zemlin like)
+                # subtour / MTZ
                 for i in noms_clients:
                     for j in noms_clients:
                         if i != j:
-                            model += u[k][j] >= u[k][i] + q[j] - (1 - x[k][i][j]) * o[k]
+                            model += u[k][j] >= u[k][i] + q[j] - (1 - x[k][i][j]) * capacites_vehicules.get(k, 0)
                 for j in noms_clients:
                     model += u[k][j] >= q[j]
-                    model += u[k][j] <= o[k]
+                    model += u[k][j] <= capacites_vehicules.get(k, 0)
 
-            # Solve
             model.solve(pulp.PULP_CBC_CMD(msg=0, timeLimit=time_limit))
 
             trajets = []
@@ -247,10 +259,11 @@ def run_vrp(fichier_excel):
                 for i in noms_avec_depot:
                     for j in noms_avec_depot:
                         if i != j and pulp.value(x[k][i][j]) is not None and pulp.value(x[k][i][j]) > 0.5:
+                            # on stocke le véhicule (nom réel k) mais formater_trajets générera V1..Vn pour l'affichage
                             trajets.append({"Cluster": cluster_id, "Véhicule": k, "Départ": i, "Arrivée": j, "Distance (KM)": d[(i, j)]})
             return trajets
 
-        # --- Résolution pour chaque cluster (on prend les clusters uniques non nuls) ---
+        # --- Résolution pour chaque cluster ---
         trajets_par_cluster = []
         for cid in clients["Cluster"].unique():
             trajets = resoudre_cluster(cid)
@@ -258,7 +271,7 @@ def run_vrp(fichier_excel):
 
         df_trajets = pd.DataFrame([t for cluster in trajets_par_cluster for t in cluster])
 
-        # --- Ordonnancement / ré-ordonnage des chemins par véhicule ---
+        # --- Ordonnancement des chemins par véhicule ---
         df_trajets_ordonnes = pd.DataFrame()
         if not df_trajets.empty:
             for cluster_id in df_trajets['Cluster'].unique():
@@ -267,7 +280,6 @@ def run_vrp(fichier_excel):
                     vehicle_df = cluster_df[cluster_df['Véhicule'] == vehicle].copy()
                     chemin = []
                     current = depot_name
-                    # boucle jusqu'à épuisement
                     while True:
                         next_rows = vehicle_df[vehicle_df['Départ'] == current]
                         if next_rows.empty:
@@ -283,21 +295,23 @@ def run_vrp(fichier_excel):
                         ordered_df['Distance (KM)'] = ordered_df.apply(lambda r: haversine(coord_dict[r['Départ']], coord_dict[r['Arrivée']]), axis=1)
                         df_trajets_ordonnes = pd.concat([df_trajets_ordonnes, ordered_df], ignore_index=True)
 
-        # --- Appliquer la nouvelle fonction pour corriger les véhicules ---
+        # --- Formater les trajets selon ta règle (et conserver une version pour la carte) ---
         if not df_trajets_ordonnes.empty:
-            df_trajets_ordonnes = formater_trajets(df_trajets_ordonnes)
+            df_display, df_for_map = formater_trajets(df_trajets_ordonnes)
+        else:
+            df_display = pd.DataFrame(columns=["Véhicule", "Départ", "Arrivée", "Distance (KM)"])
+            df_for_map = pd.DataFrame(columns=["Cluster", "Véhicule", "Départ", "Arrivée", "Distance (KM)"])
 
-        # sauvegarde Excel
+        # sauvegarde Excel (df_display)
         fichier_resultat = os.path.join(dossier_output, "trajets_vrp_ordonnes_distances.xlsx")
-        if not df_trajets_ordonnes.empty:
-            df_trajets_ordonnes.to_excel(fichier_resultat, index=False)
+        if not df_display.empty:
+            df_display.to_excel(fichier_resultat, index=False)
             log(f"Fichier résultat enregistré: {fichier_resultat}")
         else:
-            # créer un fichier vide pour cohérence
-            pd.DataFrame(columns=["Cluster","Véhicule","Départ","Arrivée","Distance (KM)"]).to_excel(fichier_resultat, index=False)
+            pd.DataFrame(columns=["Véhicule", "Départ", "Arrivée", "Distance (KM)"]).to_excel(fichier_resultat, index=False)
             log("Aucun trajet trouvé — fichier résultat vide créé.")
 
-        # Carte Folium
+        # Carte Folium : on utilise df_for_map (qui contient 'Cluster' + nouvelle colonne 'Véhicule')
         if depot_name not in coord_dict:
             raise KeyError(f"Coordonnées du dépôt ({depot_name}) introuvables.")
         map_center = coord_dict[depot_name]
@@ -306,14 +320,14 @@ def run_vrp(fichier_excel):
             lat, lon = coords
             if pd.isna(lat) or pd.isna(lon):
                 continue
-            folium.Marker([lat, lon], popup=str(nom), icon=folium.Icon(color="red" if str(nom).lower()=="depot" else "blue")).add_to(m)
+            folium.Marker([lat, lon], popup=str(nom), icon=folium.Icon(color="red" if str(nom).lower() == "depot" else "blue")).add_to(m)
 
         colors = ["blue", "orange", "green", "purple", "darkred", "darkblue", "cadetblue"]
-        cluster_ids = df_trajets_ordonnes['Cluster'].unique() if not df_trajets_ordonnes.empty else []
+        cluster_ids = df_for_map['Cluster'].unique() if not df_for_map.empty else []
         cluster_to_color_index = {cid: idx % len(colors) for idx, cid in enumerate(cluster_ids)}
 
-        if not df_trajets_ordonnes.empty:
-            for _, row in df_trajets_ordonnes.iterrows():
+        if not df_for_map.empty:
+            for _, row in df_for_map.iterrows():
                 cid = row['Cluster']
                 i = row['Départ']
                 j = row['Arrivée']
@@ -331,13 +345,13 @@ def run_vrp(fichier_excel):
         with open(os.path.join(dossier_output, "vrp_log.txt"), "w", encoding="utf-8") as lf:
             lf.write("\n".join(log_lines))
 
-        return df_trajets_ordonnes, fichier_carte
+        return df_display, fichier_carte
 
     except Exception as e:
-        # log erreur complète pour debug
         os.makedirs("resultats_vrp", exist_ok=True)
         with open(os.path.join("resultats_vrp", "vrp_error.txt"), "w", encoding="utf-8") as ef:
             ef.write("ERREUR RUN VRP\n")
             ef.write(str(e) + "\n\n")
             ef.write(traceback.format_exc())
-        raise  # on remonte l'erreur
+        raise
+
