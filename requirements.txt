@@ -4,4 +4,6 @@ numpy
 scikit-learn
 pulp
 folium
+streamlit_folium
 openpyxl
+
