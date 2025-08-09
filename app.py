@@ -36,8 +36,9 @@ if fichier:
         try:
             with open(chemin_carte, "r", encoding="utf-8") as f:
                 html = f.read()
-            st.components.v1.html(html, height=600, width=1200)
+            st.components.v1.html(html, height=600, width=1500)
         except FileNotFoundError:
             st.error("❌ La carte n'a pas été trouvée. Vérifie que run_vrp génère bien un fichier HTML.")
+
 
 
