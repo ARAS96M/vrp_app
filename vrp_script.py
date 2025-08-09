@@ -21,7 +21,7 @@ def haversine(coord1, coord2):
 def run_vrp(fichier_excel):
     eps_km = 60
     min_clients = 2
-    max_total_capacite = 10
+    # max_total_capacite = 10
     time_limit = 60
     dossier_output = "resultats_vrp"
     os.makedirs(dossier_output, exist_ok=True)
@@ -190,3 +190,4 @@ def run_vrp(fichier_excel):
     m.save(fichier_carte)
 
     return df_trajets_ordonnes, fichier_carte
+
