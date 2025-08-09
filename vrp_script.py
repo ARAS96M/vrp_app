@@ -11,32 +11,37 @@ import traceback
 # === Fonction de distance Haversine ===
 def haversine(coord1, coord2):
     R = 6371
-    lat1, lon1 = radians(coord1[0]), coord1[1]
-    lat2, lon2 = radians(coord2[0]), coord2[1]
+    lat1, lon1 = radians(coord1[0]), radians(coord1[1])
+    lat2, lon2 = radians(coord2[0]), radians(coord2[1])
     dlat = lat2 - lat1
     dlon = lon2 - lon1
     a = sin(dlat/2)**2 + cos(lat1)*cos(lat2)*sin(dlon/2)**2
     c = 2 * atan2(sqrt(a), sqrt(1 - a))
     return R * c
 
-# === Fonction pour formater les trajets selon ta règle ===
+# === Fonction pour formater les trajets selon ta règle (corrigée) ===
 def formater_trajets(df):
     """
-    Retourne (df_final, df_pour_carte)
-    - df_pour_carte : contient encore la colonne 'Cluster' et la nouvelle colonne 'Véhicule' (utile pour la carte)
-    - df_final : version à sauvegarder / afficher (colonnes : Véhicule, Départ, Arrivée, Distance (KM))
+    Retourne (df_display, df_for_map)
+    - df_display : DataFrame finale à afficher / sauvegarder (colonnes Véhicule, Départ, Arrivée, Distance (KM))
+    - df_for_map  : DataFrame utilisée pour tracer la carte (contient Cluster + nouvelle colonne Véhicule)
     Règles :
-    - Si Départ == 'depot' (et index != 0) -> on INCREMENTE le numéro du véhicule *avant* d'assigner la ligne.
-    - Si '-part' apparaît dans Départ ou Arrivée -> INCREMENT immédiat (la même ligne reçoit le véhicule incrémenté).
+    - Si '-part' dans Départ ou Arrivée -> incrément immédiat et la ligne reçoit le nouveau véhicule.
+    - Si Départ == 'depot' (et idx != 0) -> on INCRÉMENTE avant d'assigner la ligne, donc la ligne avec Départ='depot' reçoit le véhicule suivant.
     """
+    # travail sur une copie
     df2 = df.copy().reset_index(drop=True)
+
+    # supprimer colonne Véhicule existante si présente (évite l'erreur d'insertion)
+    if "Véhicule" in df2.columns:
+        df2 = df2.drop(columns=["Véhicule"])
 
     numeros = []
     current_num = 1
 
     for idx, row in df2.iterrows():
-        dep = str(row.get("Départ", "")).strip()
-        arr = str(row.get("Arrivée", "")).strip()
+        dep = str(row.get("Départ", "")).strip().lower()
+        arr = str(row.get("Arrivée", "")).strip().lower()
 
         # si '-part' dans depart/arrivée => incrément immédiat (la ligne reçoit le nouveau véhicule)
         if "-part" in dep or "-part" in arr:
@@ -44,8 +49,8 @@ def formater_trajets(df):
             numeros.append(current_num)
             continue
 
-        # si départ == depot (sauf première ligne) => incrément *avant* d'assigner la ligne
-        if dep.lower() == "depot" and idx != 0:
+        # si départ == depot (sauf première ligne) => incrément avant d'assigner la ligne
+        if dep == "depot" and idx != 0:
             current_num += 1
             numeros.append(current_num)
             continue
@@ -57,13 +62,14 @@ def formater_trajets(df):
     vehs = [f"V{n}" for n in numeros]
     df2.insert(0, "Véhicule", vehs)
 
-    # df_final masque Cluster et l'ancienne colonne Véhicule si elle existait
-    df_final = df2.drop(columns=["Cluster"], errors="ignore")  # on garde Véhicule nouvellement créé
-    # Pour la sauvegarde/affichage on peut garder seulement ces colonnes :
-    cols_keep = [c for c in ["Véhicule", "Départ", "Arrivée", "Distance (KM)"] if c in df_final.columns]
-    df_display = df_final[cols_keep].copy().reset_index(drop=True)
+    # df_for_map garde Cluster + Véhicule (utile pour la carte)
+    df_for_map = df2.copy()
 
-    return df_display, df2  # display (sans Cluster), df2 (avec Cluster + Véhicule) pour la carte
+    # df_display : garder uniquement les colonnes demandées pour affichage/sauvegarde
+    cols_keep = [c for c in ["Véhicule", "Départ", "Arrivée", "Distance (KM)"] if c in df2.columns]
+    df_display = df2[cols_keep].copy().reset_index(drop=True)
+
+    return df_display, df_for_map
 
 # === Fonction principale ===
 def run_vrp(fichier_excel):
@@ -111,6 +117,7 @@ def run_vrp(fichier_excel):
         if not all([col_v_nom, col_v_cap]):
             raise ValueError("Colonnes vehicule manquantes. Attendues: Nom, Capacité.")
 
+        # renommer colonnes pour usage interne
         clients_df = clients_df.rename(columns={
             col_nom: "Nom",
             col_lat: "Latitude",
@@ -122,6 +129,7 @@ def run_vrp(fichier_excel):
         })
         vehicules_df = vehicules_df.rename(columns={col_v_nom: "Nom", col_v_cap: "Capacite"})
 
+        # nettoyage des valeurs
         clients_df["Nom"] = clients_df["Nom"].astype(str).str.strip()
         vehicules_df["Nom"] = vehicules_df["Nom"].astype(str).str.strip()
         clients_df["Latitude"] = pd.to_numeric(clients_df["Latitude"], errors="coerce")
@@ -187,7 +195,7 @@ def run_vrp(fichier_excel):
         for _, row in clients.iterrows():
             coord_dict[row["Nom"]] = (row["Latitude"], row["Longitude"])
 
-        # --- Capacités par véhicule dict et liste véhicule (pas utilisé pour formater V1..Vn) ---
+        # --- Capacités par véhicule dict et liste véhicule ---
         capacites_vehicules = dict(zip(vehicules_df["Nom"].tolist(), vehicules_df["Capacite"].tolist()))
         liste_vehicules = vehicules_df["Nom"].tolist()
 
@@ -203,7 +211,7 @@ def run_vrp(fichier_excel):
             q = dict(zip(clients["Nom"], clients["Demande"]))
             a = dict(zip(clients["Nom"], clients["Disponible"]))
 
-            # Véhicules disponibles (noms réels) - on prend l'ordre mais on utilise V1..Vn pour affichage final
+            # Véhicules disponibles (noms réels)
             V_all = liste_vehicules
 
             # déterminer combien de véhicules nécessaires
@@ -228,7 +236,6 @@ def run_vrp(fichier_excel):
             x = pulp.LpVariable.dicts("x", (V, noms_avec_depot, noms_avec_depot), cat='Binary')
             u = pulp.LpVariable.dicts("u", (V, noms_clients), lowBound=0, cat='Continuous')
 
-            # objectif
             model += pulp.lpSum(d[i, j] * x[k][i][j] for k in V for (i, j) in d)
 
             # contraintes
@@ -240,10 +247,8 @@ def run_vrp(fichier_excel):
             for k in V:
                 for h in noms_avec_depot:
                     model += pulp.lpSum(x[k][i][h] for i in noms_avec_depot if i != h) == pulp.lpSum(x[k][h][j] for j in noms_avec_depot if j != h)
-                # capacité
                 model += pulp.lpSum(q[j] * x[k][i][j] for j in noms_clients for i in noms_avec_depot if i != j) <= capacites_vehicules.get(k, 0)
 
-                # subtour / MTZ
                 for i in noms_clients:
                     for j in noms_clients:
                         if i != j:
@@ -259,7 +264,6 @@ def run_vrp(fichier_excel):
                 for i in noms_avec_depot:
                     for j in noms_avec_depot:
                         if i != j and pulp.value(x[k][i][j]) is not None and pulp.value(x[k][i][j]) > 0.5:
-                            # on stocke le véhicule (nom réel k) mais formater_trajets générera V1..Vn pour l'affichage
                             trajets.append({"Cluster": cluster_id, "Véhicule": k, "Départ": i, "Arrivée": j, "Distance (KM)": d[(i, j)]})
             return trajets
 
@@ -295,7 +299,7 @@ def run_vrp(fichier_excel):
                         ordered_df['Distance (KM)'] = ordered_df.apply(lambda r: haversine(coord_dict[r['Départ']], coord_dict[r['Arrivée']]), axis=1)
                         df_trajets_ordonnes = pd.concat([df_trajets_ordonnes, ordered_df], ignore_index=True)
 
-        # --- Formater les trajets selon ta règle (et conserver une version pour la carte) ---
+        # --- Formater les trajets selon ta règle ---
         if not df_trajets_ordonnes.empty:
             df_display, df_for_map = formater_trajets(df_trajets_ordonnes)
         else:
@@ -354,4 +358,3 @@ def run_vrp(fichier_excel):
             ef.write(str(e) + "\n\n")
             ef.write(traceback.format_exc())
         raise
-
