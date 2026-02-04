@@ -1,3 +1,4 @@
+print(">>> VRP_SCRIPT LOADED VERSION =", __VERSION__)
 __VERSION__ = "2026-02-04 v2"
 # vrp_script_corrige.py
 import pandas as pd
@@ -506,5 +507,6 @@ def run_vrp(fichier_excel):
             ef.write(str(e) + "\n\n")
             ef.write(traceback.format_exc())
         raise
+
 
 
