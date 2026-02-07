@@ -1,4 +1,4 @@
-__VERSION__ = "2026-02-04 v3"
+__VERSION__ = "2026-02-04 v4"
 print(">>> VRP_SCRIPT LOADED VERSION =", __VERSION__)
 
 import pandas as pd
@@ -24,15 +24,16 @@ def haversine(coord1, coord2):
     return R * c
 
 
+def to_float_series(s: pd.Series) -> pd.Series:
+    # support des décimales "1,23" dans Excel
+    return pd.to_numeric(
+        s.astype(str).str.replace(",", ".", regex=False).str.strip(),
+        errors="coerce"
+    )
+
+
 # === Format trajets ===
 def formater_trajets(df):
-    """
-    Retourne (df_display, df_for_map)
-
-    Règles :
-    - Si '_part' (ou '-part') dans Départ ou Arrivée -> incrément immédiat et la ligne reçoit le nouveau véhicule.
-    - Si Départ == 'depot' (et idx != 0) -> incrément avant d'assigner la ligne.
-    """
     df2 = df.copy().reset_index(drop=True)
 
     if "Véhicule" in df2.columns:
@@ -73,13 +74,13 @@ def formater_trajets(df):
 def run_vrp(fichier_excel):
     try:
         # ====== Paramètres ======
-        eps_km = 80               # DBSCAN en km (vrai)
+        eps_km = 80
         min_clients = 2
         time_limit = 60
         dossier_output = "resultats_vrp"
         os.makedirs(dossier_output, exist_ok=True)
 
-        # Pénalité forte => évite d'utiliser 2 véhicules si 1 suffit
+        # pénalité forte => minimise # véhicules
         VEHICLE_PENALTY = 5_000_000
 
         log_lines = []
@@ -136,12 +137,12 @@ def run_vrp(fichier_excel):
         clients_df["Wilaya"] = clients_df["Wilaya"].astype(str).str.strip().str.upper()
         clients_df["ZONE"] = clients_df["ZONE"].astype(str).str.strip()
 
-        clients_df["Latitude"] = pd.to_numeric(clients_df["Latitude"], errors="coerce")
-        clients_df["Longitude"] = pd.to_numeric(clients_df["Longitude"], errors="coerce")
-        clients_df["Demande"] = pd.to_numeric(clients_df["Demande"], errors="coerce").fillna(0.0).astype(float)
+        clients_df["Latitude"] = to_float_series(clients_df["Latitude"])
+        clients_df["Longitude"] = to_float_series(clients_df["Longitude"])
+        clients_df["Demande"] = to_float_series(clients_df["Demande"]).fillna(0.0).astype(float)
         clients_df["Disponible"] = pd.to_numeric(clients_df["Disponible"], errors="coerce").fillna(0).astype(int)
 
-        vehicules_df["Capacite"] = pd.to_numeric(vehicules_df["Capacite"], errors="coerce").fillna(0.0).astype(float)
+        vehicules_df["Capacite"] = to_float_series(vehicules_df["Capacite"]).fillna(0.0).astype(float)
         vehicules_df = vehicules_df[vehicules_df["Capacite"] > 0].copy()
         if vehicules_df.empty:
             raise ValueError("Aucun véhicule avec capacité > 0.")
@@ -158,7 +159,13 @@ def run_vrp(fichier_excel):
         # --- Séparer clients ---
         clients = clients_df[clients_df["Nom"].str.lower() != "depot"].copy()
 
-        # --- Fractionnement > capacité max ---
+        # --- Log coords manquantes ---
+        missing_coords = clients[clients[["Latitude", "Longitude"]].isna().any(axis=1)][["Nom", "Wilaya", "Latitude", "Longitude"]]
+        if not missing_coords.empty:
+            log("⚠️ Clients avec coordonnées manquantes (ils ne peuvent pas être servis) :")
+            log(missing_coords.to_string(index=False))
+
+        # --- Fractionnement si Demande > capacité max ---
         capacite_max_vehicule = float(vehicules_df["Capacite"].max())
         clients_fractionnes = []
         for _, row in clients.iterrows():
@@ -184,7 +191,7 @@ def run_vrp(fichier_excel):
         clients["Cluster"] = None
         clients["Cluster"] = clients["Cluster"].astype("object")
 
-        # Cas spécial wilayas spécifiques
+        # wilayas spécifiques : cluster par ZONE
         for wilaya in wilayas_specifiques:
             mask_w = clients["Wilaya"] == wilaya
             if mask_w.any():
@@ -192,7 +199,7 @@ def run_vrp(fichier_excel):
                     lambda z: f"{wilaya}_{z if str(z).strip() not in ['', 'nan', 'None'] else 'NA'}"
                 )
 
-        # Autres wilayas: DBSCAN en HAVERSINE
+        # autres : DBSCAN haversine
         mask_autres = ~clients["Wilaya"].isin(wilayas_specifiques)
         clients_autres = clients[mask_autres].copy()
 
@@ -221,7 +228,7 @@ def run_vrp(fichier_excel):
                     else:
                         clients.loc[idx_row, "Cluster"] = f"DB_{label}"
 
-        # Sécurité si None
+        # sécurité
         none_mask = clients["Cluster"].isna()
         if none_mask.any():
             for idx, row in clients[none_mask].iterrows():
@@ -284,16 +291,27 @@ def run_vrp(fichier_excel):
             y = pulp.LpVariable.dicts("y", V, lowBound=0, upBound=1, cat="Binary")
             u = pulp.LpVariable.dicts("u", (V, noms_clients), lowBound=0, cat="Continuous")
 
+            # Objectif: minimiser # véhicules puis distance
             model += (
                 VEHICLE_PENALTY * pulp.lpSum(y[k] for k in V)
                 + pulp.lpSum(d[(i, j)] * x[k][i][j] for k in V for (i, j) in d)
             )
 
+            # interdire self-loop
             for k in V:
                 for i in noms_avec_depot:
                     model += x[k][i][i] == 0
 
-            # clients 1 fois
+            # IMPORTANT: bloquer arcs sans distance
+            for k in V:
+                for i in noms_avec_depot:
+                    for j in noms_avec_depot:
+                        if i == j:
+                            continue
+                        if (i, j) not in d:
+                            model += x[k][i][j] == 0
+
+            # chaque client: 1 entrée + 1 sortie (tous véhicules confondus)
             for j in noms_clients:
                 model += pulp.lpSum(x[k][i][j] for k in V for i in noms_avec_depot if i != j) == 1
                 model += pulp.lpSum(x[k][j][i] for k in V for i in noms_avec_depot if i != j) == 1
@@ -301,9 +319,9 @@ def run_vrp(fichier_excel):
             for k in V:
                 cap_k = float(capacites_vehicules.get(k, 0.0))
 
-                # 1 tournée max par véhicule (sinon extraction peut devenir compliquée)
-                model += pulp.lpSum(x[k][depot_name][j] for j in noms_clients) <= 1
-                model += pulp.lpSum(x[k][i][depot_name] for i in noms_clients) <= 1
+                # ✅ FIX CRUCIAL: si véhicule utilisé => départ dépôt = 1 et retour dépôt = 1
+                model += pulp.lpSum(x[k][depot_name][j] for j in noms_clients) == y[k]
+                model += pulp.lpSum(x[k][i][depot_name] for i in noms_clients) == y[k]
 
                 # arcs -> y
                 for i in noms_avec_depot:
@@ -311,14 +329,14 @@ def run_vrp(fichier_excel):
                         if i != j:
                             model += x[k][i][j] <= y[k]
 
-                # flow
+                # flow sur tous les noeuds
                 for h in noms_avec_depot:
                     model += (
                         pulp.lpSum(x[k][i][h] for i in noms_avec_depot if i != h)
                         == pulp.lpSum(x[k][h][j] for j in noms_avec_depot if j != h)
                     )
 
-                # capacité
+                # capacité véhicule
                 model += (
                     pulp.lpSum(q[j] * pulp.lpSum(x[k][i][j] for i in noms_avec_depot if i != j) for j in noms_clients)
                     <= cap_k
@@ -330,7 +348,7 @@ def run_vrp(fichier_excel):
                     model += u[k][j] >= q[j] * incoming_kj
                     model += u[k][j] <= cap_k * incoming_kj
 
-                # MTZ
+                # MTZ anti sous-tours
                 for i in noms_clients:
                     for j in noms_clients:
                         if i != j:
@@ -341,7 +359,6 @@ def run_vrp(fichier_excel):
 
             status = pulp.LpStatus.get(model.status, str(model.status))
             log(f"[DEBUG] Cluster={cluster_id} status={status}")
-
             if status in ["Infeasible", "Unbounded", "Undefined"]:
                 return []
 
@@ -352,13 +369,13 @@ def run_vrp(fichier_excel):
                         if i == j:
                             continue
                         val = pulp.value(x[k][i][j])
-                        if val is not None and val > 0.5 and (i, j) in d:
+                        if val is not None and val > 0.5:
                             trajets.append({
                                 "Cluster": cluster_id,
                                 "Véhicule": k,
                                 "Départ": i,
                                 "Arrivée": j,
-                                "Distance (KM)": float(d[(i, j)])
+                                "Distance (KM)": float(d[(i, j)]) if (i, j) in d else np.nan
                             })
 
             log(f"Cluster {cluster_id}: {len(trajets)} arcs extraits.")
@@ -381,11 +398,15 @@ def run_vrp(fichier_excel):
                 df_c = df_in[df_in["Cluster"] == cluster_id].copy()
                 for vehicle in df_c["Véhicule"].unique():
                     df_v = df_c[df_c["Véhicule"] == vehicle].copy()
+                    if df_v.empty:
+                        continue
 
-                    # mapping départ -> arrivée
+                    # build adjacency dep -> arr
                     next_map = {}
                     for _, r in df_v.iterrows():
-                        next_map[str(r["Départ"])] = (str(r["Arrivée"]), float(r["Distance (KM)"]))
+                        dep = str(r["Départ"])
+                        arr = str(r["Arrivée"])
+                        next_map[dep] = (arr, float(r["Distance (KM)"]) if pd.notna(r["Distance (KM)"]) else 0.0)
 
                     if depot_name not in next_map:
                         continue
@@ -416,7 +437,7 @@ def run_vrp(fichier_excel):
 
         df_trajets_ordonnes = ordonner_trajets(df_trajets)
 
-        # --- Format ---
+        # --- Format affichage ---
         if not df_trajets_ordonnes.empty:
             df_display, df_for_map = formater_trajets(df_trajets_ordonnes)
         else:
@@ -428,10 +449,7 @@ def run_vrp(fichier_excel):
         df_display.to_excel(fichier_resultat, index=False)
         log(f"Fichier résultat enregistré: {fichier_resultat}")
 
-        # --- Carte (nom unique) ---
-        if depot_name not in coord_dict:
-            raise KeyError(f"Coordonnées du dépôt ({depot_name}) introuvables.")
-
+        # --- Carte ---
         m = folium.Map(location=coord_dict[depot_name], zoom_start=8, width="100%")
 
         for nom, coords in coord_dict.items():
@@ -466,7 +484,6 @@ def run_vrp(fichier_excel):
         m.save(fichier_carte)
         log(f"Carte enregistrée: {fichier_carte}")
 
-        # log
         with open(os.path.join(dossier_output, "vrp_log.txt"), "w", encoding="utf-8") as lf:
             lf.write("\n".join(log_lines))
 
@@ -479,5 +496,3 @@ def run_vrp(fichier_excel):
             ef.write(str(e) + "\n\n")
             ef.write(traceback.format_exc())
         raise
-
-
