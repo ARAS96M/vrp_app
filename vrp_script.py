@@ -70,7 +70,7 @@ def formater_trajets(df):
 def run_vrp(fichier_excel):
     try:
         # ========= PARAMS =========
-        eps_km = 250          # <-- augmenté (tu peux mettre 200 si tu veux)
+        eps_km = 100          # <-- augmenté (tu peux mettre 200 si tu veux)
         min_samples = 1       # <-- ELIMINE min_clients: plus de NOISE, tout est clusteré
         time_limit = 60
         dossier_output = "resultats_vrp"
@@ -491,6 +491,7 @@ def run_vrp(fichier_excel):
             ef.write(str(e) + "\n\n")
             ef.write(traceback.format_exc())
         raise
+
 
 
 
