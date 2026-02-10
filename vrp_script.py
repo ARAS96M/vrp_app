@@ -72,7 +72,7 @@ def run_vrp(fichier_excel):
     try:
         # ====== Paramètres ======
         eps_km = 150
-        min_clients = 2
+       
         time_limit = 60
 
         dossier_output = "resultats_vrp"
@@ -497,5 +497,6 @@ def run_vrp(fichier_excel):
             ef.write(str(e) + "\n\n")
             ef.write(traceback.format_exc())
         raise
+
 
 
