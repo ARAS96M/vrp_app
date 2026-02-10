@@ -1,6 +1,3 @@
-__VERSION__ = "2026-02-07 v5"
-print(">>> VRP_SCRIPT LOADED VERSION =", __VERSION__)
-
 import pandas as pd
 import numpy as np
 import os
@@ -74,7 +71,7 @@ def formater_trajets(df):
 def run_vrp(fichier_excel):
     try:
         # ====== Paramètres ======
-        eps_km = 80
+        eps_km = 100
         min_clients = 2
         time_limit = 60
 
@@ -500,3 +497,4 @@ def run_vrp(fichier_excel):
             ef.write(str(e) + "\n\n")
             ef.write(traceback.format_exc())
         raise
+
