@@ -71,7 +71,7 @@ def formater_trajets(df):
 def run_vrp(fichier_excel):
     try:
         # ====== Paramètres ======
-        eps_km = 100
+        eps_km = 150
         min_clients = 2
         time_limit = 60
 
@@ -497,4 +497,5 @@ def run_vrp(fichier_excel):
             ef.write(str(e) + "\n\n")
             ef.write(traceback.format_exc())
         raise
+
 
